@@ -1,7 +1,4 @@
-use arduino_hal::{delay_ms, Spi};
-use embedded_hal::digital::v2::{OutputPin, StatefulOutputPin};
-use embedded_hal::prelude::{_embedded_hal_blocking_spi_Transfer, _embedded_hal_blocking_spi_Write, _embedded_hal_spi_FullDuplex};
-use nb::block;
+use arduino_hal::delay_ms;
 use crate::imu::comm::Comm;
 
 pub const I2C_DEFAULT_ADDR: u8 = 0x68;
@@ -143,25 +140,27 @@ pub fn init<C: Comm>(mut comm: C) -> Result<bool, <C as Comm>::Error> {
     Ok(true)
 }
 
+const READ_BUFFER_RECORDS: usize = 20;
+const PACKET_SIZE_BYTES: usize = 20;
+const BUFFER_SIZE: usize = READ_BUFFER_RECORDS * PACKET_SIZE_BYTES;
+const AVG_FACTOR_POW2: usize = 2;
+const GYRO_BITS: usize = 19;
+const ACCEL_BITS: usize = 18;
+
 fn assemble_20bit_gyro(msb: u8, lsb: u8, llsb: u8) -> i32 {
     if msb & 0b10000000 == 0 {
-        i32::from_be_bytes([msb,lsb,llsb & 0b11100000, 0]) >> 13
+        i32::from_be_bytes([msb,lsb,llsb & 0b11100000, 0]) >> (32-GYRO_BITS+AVG_FACTOR_POW2)
     } else {
-        i32::from_be_bytes([msb,lsb,llsb & 0b11100000 | 0b00011111, 0xFF]) >> 13
+        i32::from_be_bytes([msb,lsb,llsb & 0b11100000 | 0b00011111, 0xFF]) >> (32-GYRO_BITS+AVG_FACTOR_POW2)
     }
 }
 fn assemble_20bit_accel(msb: u8, lsb: u8, llsb: u8) -> i32 {
     if msb & 0b10000000 == 0 {
-        i32::from_be_bytes([msb,lsb,llsb & 0b11000000, 0]) >> 14
+        i32::from_be_bytes([msb,lsb,llsb & 0b11000000, 0]) >> (32-ACCEL_BITS+AVG_FACTOR_POW2)
     } else {
-        i32::from_be_bytes([msb,lsb,llsb & 0b11000000 | 0b00111111, 0xFF]) >> 14
+        i32::from_be_bytes([msb,lsb,llsb & 0b11000000 | 0b00111111, 0xFF]) >> (32-ACCEL_BITS+AVG_FACTOR_POW2)
     }
 }
-
-const READ_BUFFER_RECORDS: usize = 50;
-const PACKET_SIZE_BYTES: usize = 20;
-const BUFFER_SIZE: usize = READ_BUFFER_RECORDS * PACKET_SIZE_BYTES;
-const AVG_FACTOR_POW2: usize = 2;
 
 fn avg_with_gain_i32(state: &mut i32, update: i32) {
     if *state == 0i32 {
@@ -210,7 +209,8 @@ pub fn get_data<C: Comm>(mut comm: C, accel: &mut [i32;3], gyro: &mut [i32;3], t
                 i2 += 2;
             }
             //let t = ((buffer[offset + 0x0D] as u16) << 8) | (buffer[offset + 0x0E] as u16);
-            avg_with_gain_i16( temp, i16::from_be_bytes([buffer[offset + 0x0D], buffer[offset + 0x0E]]));
+            let temp_data = i16::from_be_bytes([buffer[offset + 0x0D], buffer[offset + 0x0E]]);
+            avg_with_gain_i16( temp, temp_data);
             *timestamp = i16::from_be_bytes([buffer[offset + 0x0F], buffer[offset + 0x10]]);
             offset += PACKET_SIZE_BYTES;
             records_read += 1;
@@ -264,6 +264,21 @@ pub fn get_data<C: Comm>(mut comm: C, accel: &mut [i32;3], gyro: &mut [i32;3], t
      */
 }
 
+pub fn temp_to_mdeg(temp: i16) -> i16 {
+    (temp * 10000 / 13248 /*207 (8-bit)*/) + 2500
+}
+
+const DPS_COEFF: i32 = 131 * (1 << AVG_FACTOR_POW2);
+const MG_COEFF: i32 = 8192 * (1 << AVG_FACTOR_POW2) / 1000;
+
+pub fn gyro_to_dps(value: i32) -> i32 {
+    value / DPS_COEFF
+}
+
+pub fn accel_to_mg(value: i32) -> i32 {
+    value / MG_COEFF
+}
+
 fn fifo_reset<C: Comm>(comm: &mut C) -> Result<(), <C as Comm>::Error> {
     comm.reg_write_byte(reg::bank0::SIGNAL_PATH_RESET, val::FIFO_FLUSH)
 }
@@ -287,62 +302,4 @@ fn wait_for_reg<C: Comm>(comm: &mut C, reg: u8, mask: u8, expect: u8, max_timeou
     }
 }
  */
-
-impl<CSPIN: StatefulOutputPin> Comm for (&mut Spi, &mut CSPIN) where <CSPIN as OutputPin>::Error: core::fmt::Debug {
-    type Error = void::Void;
-
-    fn reg_read_byte(&mut self, reg_addr: u8) -> Result<u8, Self::Error> {
-        self.1.set_low().unwrap();
-        let mut buffer = [reg_addr | 0x80, 0u8];
-        self.0.transfer(&mut buffer)?;
-        self.1.set_high().unwrap();
-        Ok(buffer[1])
-    }
-
-    fn reg_read_array<const N: usize>(&mut self, reg_addr: u8) -> Result<[u8; N], Self::Error> {
-        let mut buffer = [0u8; N];
-        self.1.set_low().unwrap();
-        block!(self.0.send(reg_addr | 0x80))?;
-        block!(self.0.read())?;
-        self.0.transfer(&mut buffer)?;
-        /*
-        for i in 0..buffer.len() {
-            block!(self.0.send(0u8))?;
-            buffer[i] = block!(self.0.read())?;
-        }
-         */
-        self.1.set_high().unwrap();
-        Ok(buffer)
-    }
-
-    fn reg_read_to_buffer(&mut self, reg_addr: u8, buffer: &mut [u8], length: usize) -> Result<(), Self::Error> {
-        self.1.set_low().unwrap();
-        block!(self.0.send(reg_addr | 0x80))?;
-        block!(self.0.read())?;
-        self.0.transfer(&mut buffer[..length])?;
-        /*
-        block!(self.0.send(reg_addr | 0x80))?;
-        for i in 0..length {
-            block!(self.0.send(0u8))?;
-            buffer[i] = block!(self.0.read())?;
-        }
-
-         */
-        self.1.set_high().unwrap();
-        Ok(())
-    }
-
-
-    fn reg_write_byte(&mut self, reg_addr: u8, value: u8) -> Result<(), Self::Error> {
-        self.1.set_low().unwrap();
-        self.0.write(&[reg_addr, value])?;
-        self.1.set_high().unwrap();
-        Ok(())
-    }
-
-    fn reg_write_array(&mut self, _: u8, _: &[u8]) -> Result<(), Self::Error> {
-        todo!(); // not supported by ICM-42688p
-    }
-}
-
 
