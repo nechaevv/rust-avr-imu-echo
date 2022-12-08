@@ -140,7 +140,7 @@ pub fn init<C: Comm>(mut comm: C) -> Result<bool, <C as Comm>::Error> {
     Ok(true)
 }
 
-const READ_BUFFER_RECORDS: usize = 20;
+const READ_BUFFER_RECORDS: usize = 10;
 const PACKET_SIZE_BYTES: usize = 20;
 const BUFFER_SIZE: usize = READ_BUFFER_RECORDS * PACKET_SIZE_BYTES;
 const AVG_FACTOR_POW2: usize = 2;

@@ -7,7 +7,9 @@ use nb::block;
 pub trait Comm {
     type Error;
     fn reg_read_byte(&mut self, reg_addr: u8) -> Result<u8, Self::Error>;
+    fn reg_read_byte_bmp388(&mut self, reg_addr: u8) -> Result<u8, Self::Error>;
     fn reg_read_array<const N: usize>(&mut self, reg_addr: u8) -> Result<[u8; N], Self::Error>;
+    fn reg_read_array_bmp388<const N: usize>(&mut self, reg_addr: u8) -> Result<[u8; N], Self::Error>;
     fn reg_read_to_buffer(&mut self, reg_addr: u8, buffer: &mut [u8], length: usize) -> Result<(), Self::Error>;
     fn reg_write_byte(&mut self, reg_addr: u8, value: u8) -> Result<(), Self::Error>;
     fn reg_write_array(&mut self, reg_addr: u8, arr: &[u8]) -> Result<(), Self::Error>;
@@ -26,10 +28,20 @@ impl Comm for (&mut I2c, u8) {
     }
 
     #[inline]
+    fn reg_read_byte_bmp388(&mut self, reg_addr: u8) -> Result<u8, Self::Error> {
+        self.reg_read_byte(reg_addr)
+    }
+
+    #[inline]
     fn reg_read_array<const N: usize>(&mut self, reg_addr: u8) -> Result<[u8; N], Self::Error> {
         let mut buffer = [0u8; N];
         self.0.write_read(self.1, &[reg_addr], &mut buffer)?;
         Ok(buffer)
+    }
+
+    #[inline]
+    fn reg_read_array_bmp388<const N: usize>(&mut self, reg_addr: u8) -> Result<[u8; N], Self::Error> {
+        self.reg_read_array::<N>(reg_addr)
     }
 
     fn reg_read_to_buffer(&mut self, reg_addr: u8, buffer: &mut [u8], length: usize) -> Result<(), Self::Error> {
@@ -61,10 +73,30 @@ impl<CSPIN: OutputPin> Comm for (&mut Spi, &mut CSPIN) where <CSPIN as OutputPin
         Ok(buffer[1])
     }
 
+    fn reg_read_byte_bmp388(&mut self, reg_addr: u8) -> Result<u8, Self::Error> {
+        self.1.set_low().unwrap();
+        let mut buffer = [reg_addr | 0x80, 0u8, 0u8];
+        self.0.transfer(&mut buffer)?;
+        self.1.set_high().unwrap();
+        Ok(buffer[2])
+    }
+
     fn reg_read_array<const N: usize>(&mut self, reg_addr: u8) -> Result<[u8; N], Self::Error> {
         let mut buffer = [0u8; N];
         self.1.set_low().unwrap();
         block!(self.0.send(reg_addr | 0x80))?;
+        block!(self.0.read())?;
+        self.0.transfer(&mut buffer)?;
+        self.1.set_high().unwrap();
+        Ok(buffer)
+    }
+
+    fn reg_read_array_bmp388<const N: usize>(&mut self, reg_addr: u8) -> Result<[u8; N], Self::Error> {
+        let mut buffer = [0u8; N];
+        self.1.set_low().unwrap();
+        block!(self.0.send(reg_addr | 0x80))?;
+        block!(self.0.read())?;
+        block!(self.0.send(0))?;
         block!(self.0.read())?;
         self.0.transfer(&mut buffer)?;
         self.1.set_high().unwrap();

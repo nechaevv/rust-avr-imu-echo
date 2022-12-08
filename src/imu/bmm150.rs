@@ -65,31 +65,31 @@ const NEGATIVE_SATURATION_Z      : i32 = -32767;
 const POSITIVE_SATURATION_Z      : i32 =  32767;
 
 pub struct TrimData {
-    digX1  : i8,  // trim x1 data
-    digY1  : i8,  // trim y1 data
-    digX2  : i8,  // trim x2 data
-    digY2  : i8,  // trim y2 data
-    digZ1  : u16, // trim z1 data
-    digZ2  : i16, // trim z2 data
-    digZ3  : i16, // trim z3 data
-    digZ4  : i16, // trim z4 data
-    digXY1 : u8,  // trim xy1 data
-    digXY2 : i8,  // trim xy2 data
-    digXYZ1: u16  // trim xyz1 data
+    dig_x1: i8,  // trim x1 data
+    dig_y1: i8,  // trim y1 data
+    dig_x2: i8,  // trim x2 data
+    dig_y2: i8,  // trim y2 data
+    dig_z1: u16, // trim z1 data
+    dig_z2: i16, // trim z2 data
+    dig_z3: i16, // trim z3 data
+    dig_z4: i16, // trim z4 data
+    dig_xy1: u8,  // trim xy1 data
+    dig_xy2: i8,  // trim xy2 data
+    dig_xyz1: u16  // trim xyz1 data
 }
 pub fn empty_trim_data() -> TrimData {
     TrimData {
-        digX1  : 0,
-        digY1  : 0,
-        digX2  : 0,
-        digY2  : 0,
-        digZ1  : 0,
-        digZ2  : 0,
-        digZ3  : 0,
-        digZ4  : 0,
-        digXY1 : 0,
-        digXY2 : 0,
-        digXYZ1: 0
+        dig_x1: 0,
+        dig_y1: 0,
+        dig_x2: 0,
+        dig_y2: 0,
+        dig_z1: 0,
+        dig_z2: 0,
+        dig_z3: 0,
+        dig_z4: 0,
+        dig_xy1: 0,
+        dig_xy2: 0,
+        dig_xyz1: 0
     }
 }
 
@@ -119,17 +119,17 @@ pub fn init<C: Comm>(mut comm: C, trim_data: &mut TrimData) -> Result<bool, <C a
     let trim_x1y1 = comm.reg_read_array::<2>(reg::DIG_X1)?;
     let trim_xyxdata = comm.reg_read_array::<4>(reg::DIG_Z4_LSB)?;
     let trim_xy1xy2 = comm.reg_read_array::<10>(reg::DIG_Z2_LSB)?;
-    trim_data.digX1 = i8::from_le_bytes([trim_x1y1[0]]);
-    trim_data.digY1 = i8::from_le_bytes([trim_x1y1[1]]);
-    trim_data.digX2 = i8::from_le_bytes([trim_xyxdata[2]]);
-    trim_data.digY2 = i8::from_le_bytes([trim_xyxdata[3]]);
-    trim_data.digZ1 = u16::from_le_bytes([trim_xy1xy2[2], trim_xy1xy2[3]]);
-    trim_data.digZ2 = i16::from_le_bytes([trim_xy1xy2[0], trim_xy1xy2[1]]);
-    trim_data.digZ3 = i16::from_le_bytes([trim_xy1xy2[6], trim_xy1xy2[7]]);
-    trim_data.digZ4 = i16::from_le_bytes([trim_xyxdata[0], trim_xyxdata[1]]);
-    trim_data.digXY1 = trim_xy1xy2[9];
-    trim_data.digXY2 = i8::from_le_bytes([trim_xy1xy2[8]]);
-    trim_data.digXYZ1 = u16::from_le_bytes([trim_xy1xy2[4], trim_xy1xy2[5] & 0x7F]);
+    trim_data.dig_x1 = i8::from_le_bytes([trim_x1y1[0]]);
+    trim_data.dig_y1 = i8::from_le_bytes([trim_x1y1[1]]);
+    trim_data.dig_x2 = i8::from_le_bytes([trim_xyxdata[2]]);
+    trim_data.dig_y2 = i8::from_le_bytes([trim_xyxdata[3]]);
+    trim_data.dig_z1 = u16::from_le_bytes([trim_xy1xy2[2], trim_xy1xy2[3]]);
+    trim_data.dig_z2 = i16::from_le_bytes([trim_xy1xy2[0], trim_xy1xy2[1]]);
+    trim_data.dig_z3 = i16::from_le_bytes([trim_xy1xy2[6], trim_xy1xy2[7]]);
+    trim_data.dig_z4 = i16::from_le_bytes([trim_xyxdata[0], trim_xyxdata[1]]);
+    trim_data.dig_xy1 = trim_xy1xy2[9];
+    trim_data.dig_xy2 = i8::from_le_bytes([trim_xy1xy2[8]]);
+    trim_data.dig_xyz1 = u16::from_le_bytes([trim_xy1xy2[4], trim_xy1xy2[5] & 0x7F]);
 
     Ok(true)
 }
@@ -157,25 +157,24 @@ fn compensate_x(raw_x: i16, rhall: u16, trim_data: &TrimData, x_val: &mut i16) -
         let process_comp_x0 = if rhall != 0 {
             /* Availability of valid data */
             rhall as i32
-        } else if trim_data.digXYZ1 != 0 {
-            trim_data.digXYZ1 as i32
+        } else if trim_data.dig_xyz1 != 0 {
+            trim_data.dig_xyz1 as i32
         } else {
-            0
+            0i32
         };
         if process_comp_x0 != 0 {
             /* Processing compensation equations */
-            let process_comp_x1 = (trim_data.digXYZ1 as i32) * 16384;
-            let process_comp_x2 = ((process_comp_x1 / process_comp_x0) as u16) - 0x4000;
-            let retval32 = process_comp_x2 as i32;
-            let process_comp_x3 = retval32 * retval32;
-            let process_comp_x4 = ((trim_data.digXY2 as i32) * (process_comp_x3 / 128));
-            let process_comp_x5 = ((trim_data.digXY1 as i16) * 128) as i32;
-            let process_comp_x6 = retval32 * process_comp_x5;
-            let process_comp_x7 = (((process_comp_x4 + process_comp_x6) / 512) + 0x100000);
-            let process_comp_x8 = ((trim_data.digX2 as i16) + 0xA0) as i32;
-            let process_comp_x9 = (process_comp_x7 * process_comp_x8) / 4096;
+            let process_comp_x1 = (trim_data.dig_xyz1 as i32) << 14;
+            let process_comp_x2 = (process_comp_x1 / process_comp_x0) - 0x4000;
+            let process_comp_x3 = process_comp_x2 * process_comp_x2;
+            let process_comp_x4 = (trim_data.dig_xy2 as i32) * (process_comp_x3 >> 7);
+            let process_comp_x5 = (trim_data.dig_xy1 as i32) << 7;
+            let process_comp_x6 = process_comp_x2 * process_comp_x5;
+            let process_comp_x7 = ((process_comp_x4 + process_comp_x6) >> 9) + 0x100000;
+            let process_comp_x8 = (trim_data.dig_x2 as i32) + 0xA0;
+            let process_comp_x9 = (process_comp_x7 * process_comp_x8) >> 12;
             let process_comp_x10 = (raw_x as i32) * process_comp_x9;
-            *x_val = ((process_comp_x10 / 8192) as i16 + ((trim_data.digX1 as i16) * 8) / 16);
+            *x_val = (((process_comp_x10 >> 13) + ((trim_data.dig_x1 as i32) << 3)) >> 4) as i16;
             return true;
         } else {
             return false;
@@ -192,24 +191,23 @@ fn compensate_y(raw_y: i16, rhall: u16, trim_data: &TrimData, y_val: &mut i16) -
         let process_comp_y0 = if rhall != 0 {
             /* Availability of valid data */
             rhall
-        } else if trim_data.digXYZ1 != 0 {
-            trim_data.digXYZ1
+        } else if trim_data.dig_xyz1 != 0 {
+            trim_data.dig_xyz1
         } else {
             0
         };
         if process_comp_y0 != 0 {
             /* Processing compensation equations */
-            let process_comp_y1 = ((trim_data.digXYZ1 as i32) * 16384) / (process_comp_y0 as i32);
-            let process_comp_y2 = (process_comp_y1 as u16) - 0x4000;
-            let retval32 = process_comp_y2 as i32;
-            let process_comp_y3 = retval32 * retval32;
-            let process_comp_y4 = (trim_data.digXY2 as i32) * (process_comp_y3 / 128);
-            let process_comp_y5 = ((trim_data.digXY1 as i16) * 128) as i32;
-            let process_comp_y6 = (process_comp_y4 + (retval32 * process_comp_y5)) / 512;
-            let process_comp_y7 = ((trim_data.digY2 as i16) + 0xA0) as i32;
-            let process_comp_y8 = ((process_comp_y6 + 0x100000) * process_comp_y7) / 4096;
+            let process_comp_y1 = ((trim_data.dig_xyz1 as i32) << 14) / (process_comp_y0 as i32);
+            let process_comp_y2 = process_comp_y1 - 0x4000;
+            let process_comp_y3 = process_comp_y2 * process_comp_y2;
+            let process_comp_y4 = (trim_data.dig_xy2 as i32) * (process_comp_y3 >> 7);
+            let process_comp_y5 = ((trim_data.dig_xy1 as i16) * 128) as i32;
+            let process_comp_y6 = (process_comp_y4 + (process_comp_y2 * process_comp_y5)) >> 9;
+            let process_comp_y7 = ((trim_data.dig_y2 as i16) + 0xA0) as i32;
+            let process_comp_y8 = ((process_comp_y6 + 0x100000) * process_comp_y7) >> 12;
             let process_comp_y9 = (raw_y as i32) * process_comp_y8;
-            *y_val = ((process_comp_y9 / 8192) as i16 + ((trim_data.digY1 as i16) * 8)) / 16;
+            *y_val = ((process_comp_y9 >> 13) as i16 + ((trim_data.dig_y1 as i16) << 3)) >> 4;
             return true;
         } else {
             return false;
@@ -223,14 +221,14 @@ fn compensate_y(raw_y: i16, rhall: u16, trim_data: &TrimData, y_val: &mut i16) -
 
 fn compensate_z(raw_z: i16, rhall: u16, trim_data: &TrimData, z_val: &mut i16) -> bool {
     if raw_z != OVERFLOW_ADCVAL_ZAXIS_HALL {
-        if (trim_data.digZ2 != 0) && (trim_data.digZ1 != 0) && (rhall != 0) &&(trim_data.digXYZ1 != 0) {
+        if (trim_data.dig_z2 != 0) && (trim_data.dig_z1 != 0) && (rhall != 0) &&(trim_data.dig_xyz1 != 0) {
             /*Processing compensation equations */
-            let process_comp_z0 = (rhall as i16) - ( trim_data.digXYZ1 as i16);
-            let process_comp_z1 = ((trim_data.digZ3 as i32) * (process_comp_z0 as i32)) / 4;
-            let process_comp_z2 = (((raw_z - trim_data.digZ4) as i32) * 32768);
-            let process_comp_z3 = (trim_data.digZ1 as i32) * ((rhall as i32) * 2);
-            let process_comp_z4 = ((process_comp_z3 + (32768)) / 65536) as i32;
-            let mut retval = ((process_comp_z2 - process_comp_z1) / (trim_data.digZ2 as i32 + process_comp_z4));
+            let process_comp_z0 = (rhall as i16) - ( trim_data.dig_xyz1 as i16);
+            let process_comp_z1 = ((trim_data.dig_z3 as i32) * (process_comp_z0 as i32)) >> 2;
+            let process_comp_z2 = ((raw_z - trim_data.dig_z4) as i32) << 15;
+            let process_comp_z3 = (trim_data.dig_z1 as i32) * ((rhall as i32) << 1);
+            let process_comp_z4 = ((process_comp_z3 + (32768)) >> 16) as i32;
+            let mut retval = (process_comp_z2 - process_comp_z1) / (trim_data.dig_z2 as i32 + process_comp_z4);
 
             /* Saturate result to +/- 2 micro-tesla */
             if retval > POSITIVE_SATURATION_Z {
@@ -239,7 +237,7 @@ fn compensate_z(raw_z: i16, rhall: u16, trim_data: &TrimData, z_val: &mut i16) -
                 retval = NEGATIVE_SATURATION_Z;
             }
             /* Conversion of LSB to micro-tesla */
-            *z_val = (retval / 16) as i16;
+            *z_val = (retval >> 4) as i16;
             return true;
         }else{
             return false;

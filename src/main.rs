@@ -10,6 +10,7 @@ use arduino_hal::delay_ms;
 use arduino_hal::spi::{DataOrder, SerialClockRate};
 use embedded_hal::spi;
 use panic_halt as _;
+use crate::imu::comm::Comm;
 
 #[arduino_hal::entry]
 fn main() -> ! {
@@ -47,6 +48,7 @@ fn main() -> ! {
 */
 
     let mut mag_trim_data = imu::bmm150::empty_trim_data();
+    let mut alt_cal_data = imu::bmp388::empty_calibration_data();
 
     if imu::icm42688::init((&mut spi, &mut cs_imu)).unwrap() {
         ufmt::uwriteln!(&mut serial, "IMU Init completed").unwrap();
@@ -56,13 +58,13 @@ fn main() -> ! {
 
     if imu::bmm150::init((&mut spi, &mut cs_mag), &mut mag_trim_data).unwrap() {
         ufmt::uwriteln!(&mut serial, "MAG Init completed").unwrap();
-        //ufmt::uwriteln!(&mut serial, "Trim data {}", &mag_trim_data);
     } else {
         ufmt::uwriteln!(&mut serial, "MAG Init failed").unwrap();
     }
 
-    if imu::bmp388::init((&mut spi, &mut cs_alt)).unwrap() {
+    if imu::bmp388::init((&mut spi, &mut cs_alt), &mut alt_cal_data).unwrap() {
         ufmt::uwriteln!(&mut serial, "ALT Init completed").unwrap();
+        //ufmt::uwriteln!(&mut serial, "T1:{} T2:{} T3:{}", alt_cal_data.par_t1, alt_cal_data.par_t2, alt_cal_data.par_t3).unwrap();
     } else {
         ufmt::uwriteln!(&mut serial, "ALT Init failed").unwrap();
     }
@@ -82,13 +84,13 @@ fn main() -> ! {
             }
             offset_samples += 1;
         }
-        if offset_samples > 0x3FF { //10 bit
+        if offset_samples > 0xFF { //8 bit
             break;
         }
     }
     for i in 0..3 {
-        accel_offset[i] >>= 10;
-        gyro_offset[i] >>= 10;
+        accel_offset[i] >>= 8;
+        gyro_offset[i] >>= 8;
     }
     ufmt::uwriteln!(&mut serial, "Offset calibration done").unwrap();
 
@@ -107,12 +109,13 @@ fn main() -> ! {
             ufmt::uwriteln!(&mut serial, "Temp: {}", temp).unwrap();
             //ufmt::uwriteln!(&mut serial, "Timestamp: {}", timestamp).unwrap();
             ufmt::uwriteln!(&mut serial, "Samples: {}", samples).unwrap();
-            let mut mag = [0i16;3];
+            let (mut mag, mut press, mut temp, mut ts) = ([0i16;3],0u32,0i32,0u32);
             if imu::bmm150::get_data((&mut spi, &mut cs_mag), &mut mag, &mag_trim_data).unwrap() {
                 ufmt::uwriteln!(&mut serial, "Mag: {} {} {}", mag[0], mag[1], mag[2]).unwrap();
             }
-
-//          ufmt::uwriteln!(&mut serial, "Baro: {} {} {}", p, t, a).unwrap();
+            if imu::bmp388::get_data((&mut spi, &mut cs_alt), &mut press, &mut temp, &mut ts, &alt_cal_data).unwrap() {
+                ufmt::uwriteln!(&mut serial, "Baro: {} {} {}", press, temp, ts).unwrap();
+            }
         }
     }
 }
