@@ -1,6 +1,6 @@
 use arduino_hal::{I2c, Spi};
 use embedded_hal::prelude::{_embedded_hal_blocking_i2c_Write, _embedded_hal_blocking_i2c_WriteRead};
-use embedded_hal::digital::v2::{OutputPin, StatefulOutputPin};
+use embedded_hal::digital::v2::OutputPin;
 use embedded_hal::prelude::{_embedded_hal_blocking_spi_Transfer, _embedded_hal_blocking_spi_Write, _embedded_hal_spi_FullDuplex};
 use nb::block;
 

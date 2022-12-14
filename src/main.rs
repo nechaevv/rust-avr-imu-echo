@@ -6,14 +6,10 @@
 pub mod imu;
 pub mod ring_buffer;
 
-use arduino_hal::{delay_ms, Usart};
-use arduino_hal::hal::usart::BaudrateExt;
-use arduino_hal::pac::USART0;
+use arduino_hal::delay_ms;
 use arduino_hal::spi::{DataOrder, SerialClockRate};
-use arduino_hal::usart::Baudrate;
 use embedded_hal::spi;
 use panic_halt as _;
-use crate::imu::comm::Comm;
 
 #[arduino_hal::entry]
 fn main() -> ! {
@@ -50,19 +46,20 @@ fn main() -> ! {
     );
 */
 
-    let mut mag_trim_data = imu::bmm150::empty_trim_data();
-
     if imu::icm42688::init((&mut spi, &mut cs_imu)).unwrap() {
         ufmt::uwriteln!(&mut serial, "IMU Init completed").unwrap();
     } else {
         ufmt::uwriteln!(&mut serial, "IMU Init failed").unwrap();
     }
 
-    if imu::bmm150::init((&mut spi, &mut cs_mag), &mut mag_trim_data).unwrap() {
-        ufmt::uwriteln!(&mut serial, "MAG Init completed").unwrap();
-    } else {
-        ufmt::uwriteln!(&mut serial, "MAG Init failed").unwrap();
-    }
+    let mut mag_sensor = match imu::bmm150::new_spi(&mut spi, cs_mag) {
+        Ok(sensor) => sensor,
+        Err(_) => {
+            ufmt::uwriteln!(&mut serial, "MAG Init failed").unwrap();
+            panic!()
+        }
+    };
+    ufmt::uwriteln!(&mut serial, "MAG Init completed").unwrap();
 
     let mut alt_sensor = match imu::bmp388::new_spi(&mut spi, cs_alt) {
         Ok(sensor) => sensor,
@@ -129,7 +126,7 @@ fn main() -> ! {
             //ufmt::uwriteln!(&mut serial, "Timestamp: {}", timestamp).unwrap();
             ufmt::uwriteln!(&mut serial, "Samples: {}", samples).unwrap();
             let (mut mag, mut press, mut temp, mut ts) = ([0i16;3],0u32,0i32,0u32);
-            if imu::bmm150::get_data((&mut spi, &mut cs_mag), &mut mag, &mag_trim_data).unwrap() {
+            if mag_sensor.get_data(&mut spi, &mut mag).unwrap() {
                 ufmt::uwriteln!(&mut serial, "Mag: {} {} {}", mag[0], mag[1], mag[2]).unwrap();
             }
             if alt_sensor.get_data(&mut spi, &mut press, &mut temp, &mut ts).unwrap() {

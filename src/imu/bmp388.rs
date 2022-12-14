@@ -1,9 +1,8 @@
 use arduino_hal::{delay_ms, I2c, Spi};
-use embedded_hal::digital::v2::{OutputPin, StatefulOutputPin};
+use embedded_hal::digital::v2::OutputPin;
 use embedded_hal::prelude::{_embedded_hal_blocking_i2c_Write, _embedded_hal_blocking_i2c_WriteRead};
 use embedded_hal::prelude::{_embedded_hal_blocking_spi_Transfer, _embedded_hal_blocking_spi_Write, _embedded_hal_spi_FullDuplex};
 use core::fmt::Debug;
-use arduino_hal::pac::SPI;
 use nb::block;
 
 pub const I2C_DEFAULT_ADDR: u8 = 0x13;
@@ -253,6 +252,6 @@ pub fn new_i2c(i2c: &mut I2c, i2c_address: u8) -> Result<Bmp388<I2cEndpoint>, Er
     Bmp388::init(I2cEndpoint { i2c_address }, i2c)
 }
 
-pub fn new_spi<CS_PIN: OutputPin>(spi: &mut Spi, cs_pin: CS_PIN) -> Result<Bmp388<SpiEndpoint<CS_PIN>>, Error> where <CS_PIN as OutputPin>::Error: Debug {
+pub fn new_spi<CSPIN: OutputPin>(spi: &mut Spi, cs_pin: CSPIN) -> Result<Bmp388<SpiEndpoint<CSPIN>>, Error> where <CSPIN as OutputPin>::Error: Debug {
     Bmp388::init(SpiEndpoint { cs_pin }, spi)
 }
