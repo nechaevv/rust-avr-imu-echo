@@ -6,8 +6,11 @@
 pub mod imu;
 pub mod ring_buffer;
 
-use arduino_hal::delay_ms;
+use arduino_hal::{delay_ms, Usart};
+use arduino_hal::hal::usart::BaudrateExt;
+use arduino_hal::pac::USART0;
 use arduino_hal::spi::{DataOrder, SerialClockRate};
+use arduino_hal::usart::Baudrate;
 use embedded_hal::spi;
 use panic_halt as _;
 use crate::imu::comm::Comm;
@@ -16,11 +19,11 @@ use crate::imu::comm::Comm;
 fn main() -> ! {
     let dp = arduino_hal::Peripherals::take().unwrap();
     let pins = arduino_hal::pins!(dp);
-    let mut serial = arduino_hal::default_serial!(dp, pins, 57600);
+    let mut serial = arduino_hal::default_serial!(dp, pins, 9600); // USB
 
     let spi_settings = arduino_hal::spi::Settings {
         data_order: DataOrder::MostSignificantFirst,
-        clock: SerialClockRate::OscfOver4,
+        clock: SerialClockRate::OscfOver2,
         mode: spi::MODE_0,
     };
     let mut cs_imu_pin = pins.d10.into_output();
@@ -48,7 +51,6 @@ fn main() -> ! {
 */
 
     let mut mag_trim_data = imu::bmm150::empty_trim_data();
-    let mut alt_cal_data = imu::bmp388::empty_calibration_data();
 
     if imu::icm42688::init((&mut spi, &mut cs_imu)).unwrap() {
         ufmt::uwriteln!(&mut serial, "IMU Init completed").unwrap();
@@ -62,16 +64,18 @@ fn main() -> ! {
         ufmt::uwriteln!(&mut serial, "MAG Init failed").unwrap();
     }
 
-    if imu::bmp388::init((&mut spi, &mut cs_alt), &mut alt_cal_data).unwrap() {
-        ufmt::uwriteln!(&mut serial, "ALT Init completed").unwrap();
-        //ufmt::uwriteln!(&mut serial, "T1:{} T2:{} T3:{}", alt_cal_data.par_t1, alt_cal_data.par_t2, alt_cal_data.par_t3).unwrap();
-    } else {
-        ufmt::uwriteln!(&mut serial, "ALT Init failed").unwrap();
-    }
+    let mut alt_sensor = match imu::bmp388::new_spi(&mut spi, cs_alt) {
+        Ok(sensor) => sensor,
+        Err(_) => {
+            ufmt::uwriteln!(&mut serial, "ALT Init failed").unwrap();
+            panic!()
+        }
+    };
+    ufmt::uwriteln!(&mut serial, "ALT Init completed").unwrap();
 
 
     let (mut gyro, mut accel, mut temp, mut timestamp) = ([0i32;3],[0i32;3], 0i16, 0i16);
-    let (mut gyro_offset, mut accel_offset) = ([0i32;3],[0i32;3]);
+    let (mut gyro_offset, mut accel_offset, mut baro_offset) = ([0i32;3],[0i32;3], 0u32);
     let mut rotation = [0i32;3];
     //calibrate offsets
     let mut offset_samples = 0u16;
@@ -84,15 +88,30 @@ fn main() -> ! {
             }
             offset_samples += 1;
         }
-        if offset_samples > 0xFF { //8 bit
+        if offset_samples > 0x3FF { //10 bit
             break;
         }
     }
     for i in 0..3 {
-        accel_offset[i] >>= 8;
-        gyro_offset[i] >>= 8;
+        accel_offset[i] >>= 10;
+        gyro_offset[i] >>= 10;
     }
-    ufmt::uwriteln!(&mut serial, "Offset calibration done").unwrap();
+    ufmt::uwriteln!(&mut serial, "IMU offset calibration done").unwrap();
+    let mut baro_samples = 0u16;
+    loop {
+        let (mut baro_sample, mut bt, mut ts) = (0u32, 0i32,0u32);
+        if alt_sensor.get_data(&mut spi, &mut baro_sample, &mut bt, &mut ts).unwrap() {
+            ufmt::uwrite!(&mut serial, ".").unwrap();
+            baro_offset += baro_sample;
+            baro_samples += 1;
+            delay_ms(100);
+        }
+        if baro_samples > 0xF { //4 bit
+            break;
+        }
+    }
+    baro_offset >>= 4;
+    ufmt::uwriteln!(&mut serial, "ALT offset calibration done").unwrap();
 
     let mut counter = 0u8;
     loop {
@@ -113,8 +132,8 @@ fn main() -> ! {
             if imu::bmm150::get_data((&mut spi, &mut cs_mag), &mut mag, &mag_trim_data).unwrap() {
                 ufmt::uwriteln!(&mut serial, "Mag: {} {} {}", mag[0], mag[1], mag[2]).unwrap();
             }
-            if imu::bmp388::get_data((&mut spi, &mut cs_alt), &mut press, &mut temp, &mut ts, &alt_cal_data).unwrap() {
-                ufmt::uwriteln!(&mut serial, "Baro: {} {} {}", press, temp, ts).unwrap();
+            if alt_sensor.get_data(&mut spi, &mut press, &mut temp, &mut ts).unwrap() {
+                ufmt::uwriteln!(&mut serial, "Baro: {} {} {}", (press - baro_offset) >> 8, (temp * 1000) >> 8, ts).unwrap();
             }
         }
     }

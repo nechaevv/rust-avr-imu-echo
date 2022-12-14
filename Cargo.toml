@@ -19,8 +19,7 @@ libm = "0.2.6"
 
 [dependencies.arduino-hal]
 git = "https://github.com/rahix/avr-hal"
-rev = "533159f6c6a508abe4ecec34bf5013d7a1eb0cf5"
-#rev = "1aacefb335517f85d0de858231e11055d9768cdf"
+rev = "c6a3d997561722f01fef9b62baeccab425b178a9"
 features = ["arduino-nano"]
 
 [dependencies.void]

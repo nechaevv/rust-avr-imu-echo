@@ -140,7 +140,7 @@ pub fn init<C: Comm>(mut comm: C) -> Result<bool, <C as Comm>::Error> {
     Ok(true)
 }
 
-const READ_BUFFER_RECORDS: usize = 10;
+const READ_BUFFER_RECORDS: usize = 32;
 const PACKET_SIZE_BYTES: usize = 20;
 const BUFFER_SIZE: usize = READ_BUFFER_RECORDS * PACKET_SIZE_BYTES;
 const AVG_FACTOR_POW2: usize = 2;
@@ -185,7 +185,6 @@ pub fn get_data<C: Comm>(mut comm: C, accel: &mut [i32;3], gyro: &mut [i32;3], t
     let mut records_read = 0u16;
 
 
-//    loop {
         let fifo_count = comm.reg_read_array::<2>(reg::bank0::FIFO_COUNTH)?;
         let bytes_available = u16::from_be_bytes(fifo_count);
         if bytes_available < PACKET_SIZE_BYTES as u16 {
@@ -215,61 +214,18 @@ pub fn get_data<C: Comm>(mut comm: C, accel: &mut [i32;3], gyro: &mut [i32;3], t
             offset += PACKET_SIZE_BYTES;
             records_read += 1;
         }
-//    }
+
     //fifo_reset(&mut comm)?;
     Ok(records_read)
 
-    /*
-    if bytes_available == 0 || bytes_available > 2080 {
-         return Ok(false);
-    }
-    //comm.reg_read_to_buffer(reg::bank0::FIFO_DATA, &mut buffer, bytes_available as usize)?;
-    //if wait_for_reg(&mut comm, reg::bank0::INT_STATUS, val::DATA_RDY_INT, val::DATA_RDY_INT, 10000000)? {
-        let buffer = comm.reg_read_array::<20>(reg::bank0::FIFO_DATA)?;
-        if buffer[0] & 0b10000000 == 0 { //buffer has data
-            comm.reg_write_byte(reg::bank0::SIGNAL_PATH_RESET, val::FIFO_FLUSH)?;
-
-        //if buffer[0] & 0xFC == val::FIFOHEADER_ACCEL | val::FIFOHEADER_GYRO | val::FIFOHEADER_TIMESTAMP_ODR {
-            for i in 0..3 {
-                let i2 = i << 1;
-                accel[i] = assemble_20bit(buffer[0x1 + i2], buffer[0x2 + i2], buffer[0x11 + i]); //hi-res
-                gyro[i] = assemble_20bit(buffer[0x7 + i2], buffer[0x8 + i2], buffer[0x11 + i] << 4); //hi-res
-            }
-            *temp = u16::from_be_bytes([buffer[0x0D], buffer[0x0E]]); //hi-res
-            // *temp = buffer[0x0D] as u16;
-            // *temp = ((buffer[0x0D] as u16) << 8) | (buffer[0x0E] as u16);
-            // *temp = (buffer[buffer_idx] as u16) << 8;
-            // buffer_idx += 1;
-            // *temp |= buffer[16] as u16;
-            // buffer_idx += 1;
-            // *timestamp = u16::from_be_bytes([buffer[0x0F], buffer[0x10]]); //hi-res
-            // *timestamp = u16::from_be_bytes([buffer[0x0E], buffer[0x0F]]);
-            // *timestamp = (buffer[buffer_idx] as u16) << 8;
-            // buffer_idx += 1;
-            // *timestamp |= buffer[buffer_idx] as u16;
-            // buffer_idx += 1;
-            // for i in 0..3 {
-            //     accel[i] <<= 4;
-            //     accel[i] |= (buffer[buffer_idx] as i32) & 0xF;
-            //     gyro[i] <<= 4;
-            //     gyro[i] |= ((buffer[buffer_idx] as i32) & 0xF0 >> 4);
-            //     buffer_idx += 1;
-            // }
-            return Ok(true);
-        }
-        return Ok(false);
-    //}
-    return Ok(false);
-
-     */
 }
 
 pub fn temp_to_mdeg(temp: i16) -> i16 {
     (temp * 10000 / 13248 /*207 (8-bit)*/) + 2500
 }
 
-const DPS_COEFF: i32 = 131 * (1 << AVG_FACTOR_POW2);
-const MG_COEFF: i32 = 8192 * (1 << AVG_FACTOR_POW2) / 1000;
+const DPS_COEFF: i32 =  131 * (1 << AVG_FACTOR_POW2);
+const MG_COEFF : i32 = 8192 * (1 << AVG_FACTOR_POW2) / 1000;
 
 pub fn gyro_to_dps(value: i32) -> i32 {
     value / DPS_COEFF
@@ -282,24 +238,3 @@ pub fn accel_to_mg(value: i32) -> i32 {
 fn fifo_reset<C: Comm>(comm: &mut C) -> Result<(), <C as Comm>::Error> {
     comm.reg_write_byte(reg::bank0::SIGNAL_PATH_RESET, val::FIFO_FLUSH)
 }
-
-/*
-fn wait_for_reg<C: Comm>(comm: &mut C, reg: u8, mask: u8, expect: u8, max_timeout_us: u32) -> Result<bool, <C as Comm>::Error> {
-    let mut cnt = 0u32;
-    loop {
-        // let status = comm.reg_read_byte(reg::bank0::INT_STATUS)?;
-        // if status & val::INTSTATUS_FIFO_THS_INT != 0 {
-        let status = comm.reg_read_byte(reg)?;
-        if status & mask == expect {
-            return Ok(true);
-        } else {
-            delay_us(1);
-            cnt += 1;
-            if cnt > max_timeout_us {
-                return Ok(false);
-            }
-        }
-    }
-}
- */
-
