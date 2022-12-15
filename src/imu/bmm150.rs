@@ -298,35 +298,33 @@ impl BusEndpoint for I2cEndpoint {
     }
 }
 
-impl From<void::Void> for Error {
-    fn from(_: void::Void) -> Error {
-        Error::CommError
-    }
+fn comm_err<T>(_:T) -> Error {
+    Error::CommError
 }
 
 impl<CSPIN: OutputPin> BusEndpoint for SpiEndpoint<CSPIN> where <CSPIN as OutputPin>::Error: Debug {
     type Bus = Spi;
 
     fn read_byte(&mut self, bus: &mut Self::Bus, reg_addr: u8) -> Result<u8, Error> {
-        self.cs_pin.set_low().unwrap();
+        self.cs_pin.set_low().map_err(comm_err)?;
         let mut buffer = [reg_addr | 0x80, 0u8];
-        bus.transfer(&mut buffer)?;
-        self.cs_pin.set_high().unwrap();
+        bus.transfer(&mut buffer).map_err(comm_err)?;
+        self.cs_pin.set_high().map_err(comm_err)?;
         Ok(buffer[1])
     }
     fn read_array<const N: usize>(&mut self, bus: &mut Self::Bus, reg_addr: u8) -> Result<[u8; N], Error> {
         let mut buffer = [0u8; N];
-        self.cs_pin.set_low().unwrap();
-        block!(bus.send(reg_addr | 0x80))?;
-        block!(bus.read())?;
-        bus.transfer(&mut buffer)?;
-        self.cs_pin.set_high().unwrap();
+        self.cs_pin.set_low().map_err(comm_err)?;
+        block!(bus.send(reg_addr | 0x80)).map_err(comm_err)?;
+        block!(bus.read()).map_err(comm_err)?;
+        bus.transfer(&mut buffer).map_err(comm_err)?;
+        self.cs_pin.set_high().map_err(comm_err)?;
         Ok(buffer)
     }
     fn write_byte(&mut self, bus: &mut Self::Bus, reg_addr: u8, value: u8) -> Result<(), Error> {
-        self.cs_pin.set_low().unwrap();
-        bus.write(&[reg_addr, value])?;
-        self.cs_pin.set_high().unwrap();
+        self.cs_pin.set_low().map_err(comm_err)?;
+        bus.write(&[reg_addr, value]).map_err(comm_err)?;
+        self.cs_pin.set_high().map_err(comm_err)?;
         Ok(())
     }
 

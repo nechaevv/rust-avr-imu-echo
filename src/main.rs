@@ -28,7 +28,7 @@ fn main() -> ! {
     cs_imu_pin.set_high();
     cs_mag.set_high();
     cs_alt.set_high();
-    let (mut spi, mut cs_imu) = arduino_hal::Spi::with_external_pullup(
+    let (mut spi, cs_imu) = arduino_hal::Spi::with_external_pullup(
         dp.SPI,
         pins.d13.into_output(),
         pins.d11.into_output(),
@@ -46,11 +46,14 @@ fn main() -> ! {
     );
 */
 
-    if imu::icm42688::init((&mut spi, &mut cs_imu)).unwrap() {
-        ufmt::uwriteln!(&mut serial, "IMU Init completed").unwrap();
-    } else {
-        ufmt::uwriteln!(&mut serial, "IMU Init failed").unwrap();
-    }
+    let mut imu_sensor = match imu::icm42688::new_spi(&mut spi, cs_imu) {
+        Ok(sensor) => sensor,
+        Err(_) => {
+            ufmt::uwriteln!(&mut serial, "IMU Init failed").unwrap();
+            panic!();
+        }
+    };
+    ufmt::uwriteln!(&mut serial, "IMU Init completed").unwrap();
 
     let mut mag_sensor = match imu::bmm150::new_spi(&mut spi, cs_mag) {
         Ok(sensor) => sensor,
@@ -78,7 +81,7 @@ fn main() -> ! {
     let mut offset_samples = 0u16;
     loop {
         let (mut gyro_sample, mut accel_sample) = ([0i32;3],[0i32;3]);
-        if imu::icm42688::get_data((&mut spi, &mut cs_imu), &mut accel_sample, &mut gyro_sample, &mut temp, &mut timestamp).unwrap() > 0 {
+        if imu_sensor.get_data(&mut spi, &mut accel_sample, &mut gyro_sample, &mut temp, &mut timestamp).unwrap() > 0 {
             for i in 0..3 {
                 accel_offset[i] += accel_sample[i];
                 gyro_offset[i] += gyro_sample[i];
@@ -112,7 +115,7 @@ fn main() -> ! {
 
     let mut counter = 0u8;
     loop {
-        let samples = imu::icm42688::get_data((&mut spi, &mut cs_imu), &mut accel, &mut gyro, &mut temp, &mut timestamp).unwrap();
+        let samples = imu_sensor.get_data(&mut spi, &mut accel, &mut gyro, &mut temp, &mut timestamp).unwrap();
         for i in 0..3 {
             rotation[i] += gyro[i] - gyro_offset[i];
         }

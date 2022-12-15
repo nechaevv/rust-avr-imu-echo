@@ -1,5 +1,9 @@
-use arduino_hal::delay_ms;
-use crate::imu::comm::Comm;
+use arduino_hal::{delay_ms, I2c, Spi};
+use embedded_hal::digital::v2::OutputPin;
+use embedded_hal::prelude::{_embedded_hal_blocking_i2c_Write, _embedded_hal_blocking_i2c_WriteRead};
+use embedded_hal::prelude::{_embedded_hal_blocking_spi_Transfer, _embedded_hal_blocking_spi_Write, _embedded_hal_spi_FullDuplex};
+use core::fmt::Debug;
+use nb::block;
 
 pub const I2C_DEFAULT_ADDR: u8 = 0x68;
 
@@ -96,48 +100,110 @@ pub mod val {
 
 }
 
-pub fn check<C: Comm>(mut comm: C, whoami: &mut u8) -> Result<bool, <C as Comm>::Error> {
-    //comm.reg_write_byte(reg::REG_BANK_SEL, 0);
-    *whoami = comm.reg_read_byte(reg::bank0::WHO_AM_I)?;
-    Ok(*whoami == val::WHO_AM_I)
+pub struct Icm42688<BE: BusEndpoint> {
+    bus_endpoint: BE
 }
 
-pub fn init<C: Comm>(mut comm: C) -> Result<bool, <C as Comm>::Error> {
-    // Software reset
-    comm.reg_write_byte(reg::bank0::DEVICE_CONFIG, val::DEVCONFIG_SOFT_RESET_ENABLE)?;
-    delay_ms(1);
+#[derive(Debug)]
+pub enum Error {
+    CommError,
+    SensorError
+}
 
-    loop {
-        if comm.reg_read_byte(reg::bank0::WHO_AM_I)? == val::WHO_AM_I
-            && comm.reg_read_byte(reg::bank0::DEVICE_CONFIG)? == 0x00
-            && comm.reg_read_byte(reg::bank0::INT_STATUS)? & val::RESET_DONE_INT != 0
-        {
-            break;
+impl<BE: BusEndpoint> Icm42688<BE> {
+    pub fn init(mut bus_endpoint: BE, bus: &mut BE::Bus) -> Result<Icm42688<BE>, Error> {
+        // Software reset
+        bus_endpoint.write_byte(bus, reg::bank0::DEVICE_CONFIG, val::DEVCONFIG_SOFT_RESET_ENABLE)?;
+        delay_ms(1);
+
+        loop {
+            if bus_endpoint.read_byte(bus, reg::bank0::WHO_AM_I)? == val::WHO_AM_I
+                && bus_endpoint.read_byte(bus, reg::bank0::DEVICE_CONFIG)? == 0x00
+                && bus_endpoint.read_byte(bus, reg::bank0::INT_STATUS)? & val::RESET_DONE_INT != 0
+            {
+                break;
+            }
+            delay_ms(10);
         }
-        delay_ms(10);
+
+        // sensors config
+        bus_endpoint.write_byte(bus, reg::bank0::ACCEL_CONFIG_0, val::ACFG0_FS_SEL_16G | val::ODR_4KHZ)?;
+        bus_endpoint.write_byte(bus, reg::bank0::GYRO_CONFIG_0, val::GCFG0_FS_SEL_2000DPS | val::ODR_4KHZ)?;
+
+        //comm.reg_write_byte(reg::bank0::DRIVE_CONFIG, val::DRIVECONFIG_MIN_SLEW_RATE)?;
+        let pwr_mgmt = val::PWR_GYRO_MODE_LOW_NOISE | val::PWR_ACCEL_MODE_LOW_NOISE;
+        bus_endpoint.write_byte(bus, reg::bank0::PWR_MGMT_0, pwr_mgmt)?;
+        delay_ms(45);
+        if bus_endpoint.read_byte(bus, reg::bank0::PWR_MGMT_0)? != pwr_mgmt {
+            return Err(Error::SensorError);
+        }
+        // FIFO config
+        let fifo_config_1 = val::FIFOCONFIG1_HIRES_EN; // | val::FIFOCONFIG1_TEMP_EN | val::FIFOCONFIG1_GYRO_EN | val::FIFOCONFIG1_ACCEL_EN;
+        bus_endpoint.write_byte(bus, reg::bank0::FIFO_CONFIG_1, fifo_config_1)?;
+        if bus_endpoint.read_byte(bus, reg::bank0::FIFO_CONFIG_1)? != fifo_config_1 {
+            return Err(Error::SensorError);
+        }
+        bus_endpoint.write_byte(bus, reg::bank0::FIFO_CONFIG, val::FIFOCONFIG_STOP_ON_FULL_MODE/* val::FIFOCONFIG_STREAM_TO_FIFO_MODE*/)?;
+        delay_ms(100);
+        let mut sensor = Icm42688 { bus_endpoint };
+        sensor.fifo_reset(bus)?;
+        Ok(sensor)
     }
 
-    // sensors config
-    comm.reg_write_byte(reg::bank0::ACCEL_CONFIG_0, val::ACFG0_FS_SEL_16G     | val::ODR_4KHZ)?;
-    comm.reg_write_byte(reg::bank0::GYRO_CONFIG_0,  val::GCFG0_FS_SEL_2000DPS | val::ODR_4KHZ)?;
+    pub fn get_data(&mut self, bus: &mut BE::Bus, accel: &mut [i32; 3], gyro: &mut [i32; 3], temp: &mut i16, timestamp: &mut i16) -> Result<u16, Error> {
+        let mut buffer = [0u8; BUFFER_SIZE];
+        let mut records_read = 0u16;
 
-    //comm.reg_write_byte(reg::bank0::DRIVE_CONFIG, val::DRIVECONFIG_MIN_SLEW_RATE)?;
-    let pwr_mgmt = val::PWR_GYRO_MODE_LOW_NOISE | val::PWR_ACCEL_MODE_LOW_NOISE;
-    comm.reg_write_byte(reg::bank0::PWR_MGMT_0, pwr_mgmt)?;
-    delay_ms(45);
-    if comm.reg_read_byte(reg::bank0::PWR_MGMT_0)? != pwr_mgmt {
-        return Ok(false);
+
+        let fifo_count = self.bus_endpoint.read_array::<2>(bus, reg::bank0::FIFO_COUNTH)?;
+        let bytes_available = u16::from_be_bytes(fifo_count);
+        if bytes_available < PACKET_SIZE_BYTES as u16 {
+            return Ok(0u16);
+        }
+        let mut records_to_read: usize = bytes_available as usize / PACKET_SIZE_BYTES;
+        if records_to_read > READ_BUFFER_RECORDS {
+            records_to_read = READ_BUFFER_RECORDS;
+        }
+        self.bus_endpoint.read_to_buffer(bus, reg::bank0::FIFO_DATA, &mut buffer, records_to_read * PACKET_SIZE_BYTES)?;
+        //let buffer = comm.reg_read_array::<BUFFER_SIZE>(reg::bank0::FIFO_DATA)?;
+        let mut offset: usize = 0;
+        for _ in 0..records_to_read {
+            if buffer[offset] & 0b11110000 != 0b01110000 {
+                continue;
+            }
+            let mut i2: usize = 0;
+            for i in 0..3 {
+                avg_with_gain_i32(&mut accel[i], assemble_20bit_accel(buffer[offset + 0x1 + i2], buffer[offset + 0x2 + i2], buffer[offset + 0x11 + i] & 0xF0));
+                avg_with_gain_i32(&mut gyro[i], assemble_20bit_gyro(buffer[offset + 0x7 + i2], buffer[offset + 0x8 + i2], (buffer[offset + 0x11 + i] & 0x0F) << 4));
+                i2 += 2;
+            }
+            //let t = ((buffer[offset + 0x0D] as u16) << 8) | (buffer[offset + 0x0E] as u16);
+            let temp_data = i16::from_be_bytes([buffer[offset + 0x0D], buffer[offset + 0x0E]]);
+            avg_with_gain_i16(temp, temp_data);
+            *timestamp = i16::from_be_bytes([buffer[offset + 0x0F], buffer[offset + 0x10]]);
+            offset += PACKET_SIZE_BYTES;
+            records_read += 1;
+        }
+
+        //fifo_reset(&mut comm)?;
+        Ok(records_read)
     }
-    // FIFO config
-    let fifo_config_1 = val::FIFOCONFIG1_HIRES_EN; // | val::FIFOCONFIG1_TEMP_EN | val::FIFOCONFIG1_GYRO_EN | val::FIFOCONFIG1_ACCEL_EN;
-    comm.reg_write_byte(reg::bank0::FIFO_CONFIG_1, fifo_config_1)?;
-    if comm.reg_read_byte(reg::bank0::FIFO_CONFIG_1)? != fifo_config_1 {
-        return Ok(false);
+
+    pub fn temp_to_mdeg(temp: i16) -> i16 {
+        (temp * 10000 / 13248 /*207 (8-bit)*/) + 2500
     }
-    comm.reg_write_byte(reg::bank0::FIFO_CONFIG, val::FIFOCONFIG_STOP_ON_FULL_MODE/* val::FIFOCONFIG_STREAM_TO_FIFO_MODE*/)?;
-    delay_ms(100);
-    fifo_reset(&mut comm)?;
-    Ok(true)
+
+    pub fn gyro_to_dps(value: i32) -> i32 {
+        value / DPS_COEFF
+    }
+
+    pub fn accel_to_mg(value: i32) -> i32 {
+        value / MG_COEFF
+    }
+
+    fn fifo_reset(&mut self, bus: &mut BE::Bus) -> Result<(), Error> {
+        self.bus_endpoint.write_byte(bus, reg::bank0::SIGNAL_PATH_RESET, val::FIFO_FLUSH)
+    }
 }
 
 const READ_BUFFER_RECORDS: usize = 32;
@@ -147,18 +213,21 @@ const AVG_FACTOR_POW2: usize = 2;
 const GYRO_BITS: usize = 19;
 const ACCEL_BITS: usize = 18;
 
+const DPS_COEFF: i32 = 131 * (1 << AVG_FACTOR_POW2);
+const MG_COEFF: i32 = 8192 * (1 << AVG_FACTOR_POW2) / 1000;
+
 fn assemble_20bit_gyro(msb: u8, lsb: u8, llsb: u8) -> i32 {
     if msb & 0b10000000 == 0 {
-        i32::from_be_bytes([msb,lsb,llsb & 0b11100000, 0]) >> (32-GYRO_BITS+AVG_FACTOR_POW2)
+        i32::from_be_bytes([msb, lsb, llsb & 0b11100000, 0]) >> (32 - GYRO_BITS + AVG_FACTOR_POW2)
     } else {
-        i32::from_be_bytes([msb,lsb,llsb & 0b11100000 | 0b00011111, 0xFF]) >> (32-GYRO_BITS+AVG_FACTOR_POW2)
+        i32::from_be_bytes([msb, lsb, llsb & 0b11100000 | 0b00011111, 0xFF]) >> (32 - GYRO_BITS + AVG_FACTOR_POW2)
     }
 }
 fn assemble_20bit_accel(msb: u8, lsb: u8, llsb: u8) -> i32 {
     if msb & 0b10000000 == 0 {
-        i32::from_be_bytes([msb,lsb,llsb & 0b11000000, 0]) >> (32-ACCEL_BITS+AVG_FACTOR_POW2)
+        i32::from_be_bytes([msb, lsb, llsb & 0b11000000, 0]) >> (32 - ACCEL_BITS + AVG_FACTOR_POW2)
     } else {
-        i32::from_be_bytes([msb,lsb,llsb & 0b11000000 | 0b00111111, 0xFF]) >> (32-ACCEL_BITS+AVG_FACTOR_POW2)
+        i32::from_be_bytes([msb, lsb, llsb & 0b11000000 | 0b00111111, 0xFF]) >> (32 - ACCEL_BITS + AVG_FACTOR_POW2)
     }
 }
 
@@ -179,62 +248,95 @@ fn avg_with_gain_i16(state: &mut i16, update: i16) {
     }
 }
 
-pub fn get_data<C: Comm>(mut comm: C, accel: &mut [i32;3], gyro: &mut [i32;3], temp: &mut i16, timestamp: &mut i16) -> Result<u16, <C as Comm>::Error> {
+pub trait BusEndpoint {
+    type Bus;
+    fn read_byte(&mut self, bus: &mut Self::Bus, reg_addr: u8) -> Result<u8, Error>;
+    fn read_array<const N: usize>(&mut self, bus: &mut Self::Bus, reg_addr: u8) -> Result<[u8; N], Error>;
+    fn read_to_buffer(&mut self, bus: &mut Self::Bus, reg_addr: u8, buffer: &mut [u8], length: usize) -> Result<(), Error>;
+    fn write_byte(&mut self, bus: &mut Self::Bus, reg_addr: u8, value: u8) -> Result<(), Error>;
+}
 
-    let mut buffer = [0u8; BUFFER_SIZE];
-    let mut records_read = 0u16;
+pub struct I2cEndpoint {
+    i2c_address: u8
+}
 
+pub struct SpiEndpoint<CSPIN: OutputPin> {
+    cs_pin: CSPIN
+}
 
-        let fifo_count = comm.reg_read_array::<2>(reg::bank0::FIFO_COUNTH)?;
-        let bytes_available = u16::from_be_bytes(fifo_count);
-        if bytes_available < PACKET_SIZE_BYTES as u16 {
-            return Ok(0u16);
-        }
-        let mut records_to_read: usize = bytes_available as usize / PACKET_SIZE_BYTES;
-        if records_to_read > READ_BUFFER_RECORDS {
-            records_to_read = READ_BUFFER_RECORDS;
-        }
-        comm.reg_read_to_buffer(reg::bank0::FIFO_DATA, &mut buffer, records_to_read * PACKET_SIZE_BYTES)?;
-        //let buffer = comm.reg_read_array::<BUFFER_SIZE>(reg::bank0::FIFO_DATA)?;
-        let mut offset: usize = 0;
-        for _ in 0..records_to_read {
-            if buffer[offset] & 0b11110000 != 0b01110000 {
-                continue;
-            }
-            let mut i2: usize = 0;
-            for i in 0..3 {
-                avg_with_gain_i32(&mut accel[i], assemble_20bit_accel(buffer[offset + 0x1 + i2], buffer[offset + 0x2 + i2], buffer[offset + 0x11 + i] & 0xF0));
-                avg_with_gain_i32(&mut gyro[i], assemble_20bit_gyro(buffer[offset + 0x7 + i2], buffer[offset + 0x8 + i2], (buffer[offset + 0x11 + i] & 0x0F) << 4));
-                i2 += 2;
-            }
-            //let t = ((buffer[offset + 0x0D] as u16) << 8) | (buffer[offset + 0x0E] as u16);
-            let temp_data = i16::from_be_bytes([buffer[offset + 0x0D], buffer[offset + 0x0E]]);
-            avg_with_gain_i16( temp, temp_data);
-            *timestamp = i16::from_be_bytes([buffer[offset + 0x0F], buffer[offset + 0x10]]);
-            offset += PACKET_SIZE_BYTES;
-            records_read += 1;
-        }
+impl From<arduino_hal::i2c::Error> for Error {
+    fn from(_: arduino_hal::i2c::Error) -> Error {
+        Error::CommError
+    }
+}
 
-    //fifo_reset(&mut comm)?;
-    Ok(records_read)
+impl BusEndpoint for I2cEndpoint {
+    type Bus = I2c;
+    fn read_byte(&mut self, bus: &mut Self::Bus, reg_addr: u8) -> Result<u8, Error> {
+        let mut value: [u8;1] = [0];
+        bus.write_read(self.i2c_address, &[reg_addr], &mut value)?;
+        Ok(value[0])
+    }
+    fn read_array<const N: usize>(&mut self, bus: &mut Self::Bus, reg_addr: u8) -> Result<[u8; N], Error> {
+        let mut buffer = [0u8; N];
+        bus.write_read(self.i2c_address, &[reg_addr], &mut buffer)?;
+        Ok(buffer)
+    }
+    fn read_to_buffer(&mut self, bus: &mut Self::Bus, reg_addr: u8, buffer: &mut [u8], length: usize) -> Result<(), Error> {
+        bus.write_read(self.i2c_address, &[reg_addr], &mut buffer[..length])?;
+        Ok(())
+    }
+    fn write_byte(&mut self, bus: &mut Self::Bus, reg_addr: u8, value: u8) -> Result<(), Error> {
+        bus.write(self.i2c_address, &[reg_addr])?;
+        bus.write(self.i2c_address, &[value])?;
+        Ok(())
+    }
+}
+
+fn comm_err<T>(_:T) -> Error {
+    Error::CommError
+}
+
+impl<CSPIN: OutputPin> BusEndpoint for SpiEndpoint<CSPIN> {
+    type Bus = Spi;
+
+    fn read_byte(&mut self, bus: &mut Self::Bus, reg_addr: u8) -> Result<u8, Error> {
+        self.cs_pin.set_low().map_err(comm_err)?;
+        let mut buffer = [reg_addr | 0x80, 0u8];
+        bus.transfer(&mut buffer).map_err(comm_err)?;
+        self.cs_pin.set_high().map_err(comm_err)?;
+        Ok(buffer[1])
+    }
+    fn read_array<const N: usize>(&mut self, bus: &mut Self::Bus, reg_addr: u8) -> Result<[u8; N], Error> {
+        let mut buffer = [0u8; N];
+        self.cs_pin.set_low().map_err(comm_err)?;
+        block!(bus.send(reg_addr | 0x80)).map_err(comm_err)?;
+        block!(bus.read()).map_err(comm_err)?;
+        bus.transfer(&mut buffer).map_err(comm_err)?;
+        self.cs_pin.set_high().map_err(comm_err)?;
+        Ok(buffer)
+    }
+    fn read_to_buffer(&mut self, bus: &mut Self::Bus, reg_addr: u8, buffer: &mut [u8], length: usize) -> Result<(), Error> {
+        self.cs_pin.set_low().map_err(comm_err)?;
+        block!(bus.send(reg_addr | 0x80)).map_err(comm_err)?;
+        block!(bus.read()).map_err(comm_err)?;
+        bus.transfer(&mut buffer[..length]).map_err(comm_err)?;
+        self.cs_pin.set_high().map_err(comm_err)?;
+        Ok(())
+    }
+    fn write_byte(&mut self, bus: &mut Self::Bus, reg_addr: u8, value: u8) -> Result<(), Error> {
+        self.cs_pin.set_low().map_err(comm_err)?;
+        bus.write(&[reg_addr, value]).map_err(comm_err)?;
+        self.cs_pin.set_high().map_err(comm_err)?;
+        Ok(())
+    }
 
 }
 
-pub fn temp_to_mdeg(temp: i16) -> i16 {
-    (temp * 10000 / 13248 /*207 (8-bit)*/) + 2500
+pub fn new_i2c(i2c: &mut I2c, i2c_address: u8) -> Result<Icm42688<I2cEndpoint>, Error> {
+    Icm42688::init(I2cEndpoint { i2c_address }, i2c)
 }
 
-const DPS_COEFF: i32 =  131 * (1 << AVG_FACTOR_POW2);
-const MG_COEFF : i32 = 8192 * (1 << AVG_FACTOR_POW2) / 1000;
-
-pub fn gyro_to_dps(value: i32) -> i32 {
-    value / DPS_COEFF
-}
-
-pub fn accel_to_mg(value: i32) -> i32 {
-    value / MG_COEFF
-}
-
-fn fifo_reset<C: Comm>(comm: &mut C) -> Result<(), <C as Comm>::Error> {
-    comm.reg_write_byte(reg::bank0::SIGNAL_PATH_RESET, val::FIFO_FLUSH)
+pub fn new_spi<CSPIN: OutputPin>(spi: &mut Spi, cs_pin: CSPIN) -> Result<Icm42688<SpiEndpoint<CSPIN>>, Error> {
+    Icm42688::init(SpiEndpoint { cs_pin }, spi)
 }
